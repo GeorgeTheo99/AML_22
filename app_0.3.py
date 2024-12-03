@@ -257,6 +257,23 @@ class EnhancedEnsembleModel:
                 final_preds[i] = np.argmax(final_probs[i])
         
         return final_preds, final_probs
+    
+    def predict_all(self, images, clip_features):
+        """
+        Return predictions from all methods (individual models, weighted voting, and hierarchical)
+        """
+        results = {}
+
+        # standalone model predictions
+        results['mlp'] = self.predict_mlp(clip_features)
+        results['logreg'] = self.predict_logreg(clip_features)
+        results['cnn'] = self.predict_cnn(images)
+
+        # Ensemble predictions
+        results['weighted_voting'] = self.predict_weighted_voting(images, clip_features)
+        results['hierarchical'] = self.predict_hierarchical(images, clip_features)
+
+        return results
 
 @st.cache_resource
 def load_models():
@@ -282,20 +299,36 @@ def load_models():
     
     return clip_model, preprocess, ensemble_model
 
+def crop_center_square(image):
+    """
+    Crop the image to a square from the center
+    """
+    width, height = image.size
+    size = min(width, height)
+    left = (width - size) // 2
+    top = (height - size) // 2
+    right = left + size
+    bottom = top + size
+    return image.crop((left, top, right, bottom))
+
+
 # Modified to ignore unhashable model parameters in cache
+@st.cache_data
 @st.cache_data
 def process_image(image_bytes, _clip_model, _preprocess, _ensemble_model):
     # Convert bytes to image
     image = Image.open(io.BytesIO(image_bytes))
     
-    # Convert to grayscale and resize to 48x48
-    img_gray = image.convert('L').resize((48, 48))
-    img_array = np.array(img_gray)
+    # First crop to square, then convert to grayscale and resize
+    img_square = crop_center_square(image)
+    img_gray = img_square.convert('L')
+    img_48 = img_gray.resize((48, 48), Image.Resampling.LANCZOS)
+    img_array = np.array(img_48)
     img_array_cnn = img_array.reshape(1, 48, 48, 1)
 
-    # Prepare image for CLIP
-    img_rgb = Image.new('RGB', image.size, (0, 0, 0))
-    img_rgb.paste(img_gray)
+    # Prepare image for CLIP - use the square cropped image
+    img_rgb = Image.new('RGB', img_square.size, (0, 0, 0))
+    img_rgb.paste(img_square)
     img_clip = _preprocess(img_rgb).unsqueeze(0).to(DEVICE)
 
     # Extract CLIP features
@@ -306,6 +339,7 @@ def process_image(image_bytes, _clip_model, _preprocess, _ensemble_model):
 
     # Get predictions
     return _ensemble_model.predict_all(img_array_cnn, clip_features)
+
 
 def main():
     st.set_page_config(
@@ -353,10 +387,11 @@ def main():
         with col1:
             st.subheader("Original Image")
             st.image(image, use_container_width=True)
-        
+
         with col2:
             st.subheader("Processed Image")
-            img_gray = image.convert('L').resize((48, 48))
+            cropped_img = crop_center_square(image)
+            img_gray = cropped_img.convert('L').resize((48, 48), Image.Resampling.LANCZOS)
             st.image(img_gray, use_container_width=True)
 
         # Process image and get predictions
@@ -398,10 +433,10 @@ def main():
             # Add explanation of methods
             st.markdown("""
             #### Ensemble Methods Explained
-            - **Weighted Voting**: Combines predictions from all models using optimized weights (MLP: 40%, LogReg: 30%, CNN: 30%)
+            - **Weighted Voting**: Combines predictions from all models using confidence-based weights
             - **Hierarchical**: Uses a decision tree approach:
-                1. If MLP confidence > 80%, use MLP prediction
-                2. If LogReg and CNN agree, use their average probability
+                1. If CNN confidence > 80%, use MLP prediction
+                2. If LogReg and MLP agree, use their average probability
                 3. Otherwise, use weighted voting
             """)
 

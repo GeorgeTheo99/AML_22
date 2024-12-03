@@ -55,11 +55,11 @@ Ensemble Logistic Regression
 
 Performance
 The system achieves the following accuracies on the validation set:
-
+Through empircal testing, CNN performed better on stock images so was given preference in hierarchical model.
 - MLP with CLIP features: ~69%
 - Logistic Regression: ~65%
 - CNN: ~63%
-- Weighted Voting Ensemble: ~71%
+- Weighted Voting Ensemble: ~70%
 - Hierarchical Ensemble: ~69%
 
 Model weights are saved with timestamps:
