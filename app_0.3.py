@@ -150,17 +150,21 @@ class EmotionCNN(nn.Module):
 
 class EnhancedEnsembleModel:
     def __init__(self, mlp_model, logreg_model, cnn_model):
+        """
+        Initialize ensemble model with three base models
+        """
         self.mlp_model = mlp_model
         self.logreg_model = logreg_model
         self.cnn_model = cnn_model
         self.device = DEVICE
         self.model_weights = {
-            'mlp': 0.4,      # Best performer gets highest weight
-            'logreg': 0.3,   # Second best
-            'cnn': 0.3       # Third best
+            'mlp': 0.4,      # Base weight for MLP
+            'logreg': 0.3,   # Base weight for LogReg
+            'cnn': 0.3       # Base weight for CNN
         }
 
     def predict_mlp(self, clip_features):
+        """Individual MLP prediction"""
         self.mlp_model.eval()
         with torch.no_grad():
             features = torch.FloatTensor(clip_features).to(self.device)
@@ -170,11 +174,13 @@ class EnhancedEnsembleModel:
             return preds, probs.cpu().numpy()
 
     def predict_logreg(self, clip_features):
+        """Individual Logistic Regression prediction"""
         preds = self.logreg_model.predict(clip_features)
         probs = self.logreg_model.predict_proba(clip_features)
         return preds, probs
 
     def predict_cnn(self, images):
+        """Individual CNN prediction"""
         self.cnn_model.eval()
         with torch.no_grad():
             inputs = torch.FloatTensor(images).permute(0, 3, 1, 2).to(self.device) / 255.0
@@ -184,60 +190,76 @@ class EnhancedEnsembleModel:
             return preds, probs.cpu().numpy()
 
     def predict_weighted_voting(self, images, clip_features):
+        """
+        Ensemble prediction using dynamic confidence-weighted voting
+        """
+        # Get predictions from all models
         mlp_preds, mlp_probs = self.predict_mlp(clip_features)
         logreg_preds, logreg_probs = self.predict_logreg(clip_features)
         cnn_preds, cnn_probs = self.predict_cnn(images)
-
+        
+        # Adjust weights based on prediction confidence
+        confidences = [np.max(probs, axis=1) for probs in [mlp_probs, logreg_probs, cnn_probs]]
+        weights = np.array([self.model_weights[m] * conf for m, conf in 
+                          zip(['mlp', 'logreg', 'cnn'], confidences)])
+        weights = weights / weights.sum(axis=0, keepdims=True)
+        
+        # Calculate weighted probabilities
         weighted_probs = (
-            self.model_weights['mlp'] * mlp_probs +
-            self.model_weights['logreg'] * logreg_probs +
-            self.model_weights['cnn'] * cnn_probs
+            weights[0][:, None] * mlp_probs +
+            weights[1][:, None] * logreg_probs +
+            weights[2][:, None] * cnn_probs
         )
-        weighted_preds = np.argmax(weighted_probs, axis=1)
-        return weighted_preds, weighted_probs
+        return np.argmax(weighted_probs, axis=1), weighted_probs
 
     def predict_hierarchical(self, images, clip_features):
+        """
+        Hierarchical ensemble prediction with CNN as primary model,
+        using dynamic weight adjustment based on confidence scores
+        """
+        # Get predictions and confidence scores from each model
         mlp_preds, mlp_probs = self.predict_mlp(clip_features)
         logreg_preds, logreg_probs = self.predict_logreg(clip_features)
         cnn_preds, cnn_probs = self.predict_cnn(images)
-
-        mlp_conf = np.max(mlp_probs, axis=1)
+        
+        # Calculate confidence scores for each model
+        confidences = [np.max(probs, axis=1) for probs in [mlp_probs, logreg_probs, cnn_probs]]
+        
+        # Dynamic weight adjustment based on confidence
+        base_weights = np.array([self.model_weights[m] for m in ['mlp', 'logreg', 'cnn']])
+        weights = np.array([w * conf for w, conf in zip(base_weights, confidences)])
+        weights = weights / weights.sum(axis=0, keepdims=True)
         
         n_samples = len(images)
         final_preds = np.zeros(n_samples, dtype=int)
         final_probs = np.zeros((n_samples, len(EMOTION_LABELS)))
-
+        
+        # Hierarchical decision making with CNN as primary model
         for i in range(n_samples):
-            if mlp_conf[i] > 0.8:
-                final_preds[i] = mlp_preds[i]
-                final_probs[i] = mlp_probs[i]
-            elif logreg_preds[i] == cnn_preds[i]:
-                final_preds[i] = logreg_preds[i]
-                final_probs[i] = (logreg_probs[i] + cnn_probs[i]) / 2
-            else:
-                weighted_prob = (
-                    self.model_weights['mlp'] * mlp_probs[i] +
-                    self.model_weights['logreg'] * logreg_probs[i] +
-                    self.model_weights['cnn'] * cnn_probs[i]
+            # Check CNN confidence first (using confidences[2] for CNN)
+            if confidences[2][i] > 0.8:  # High confidence CNN prediction
+                final_preds[i] = cnn_preds[i]
+                final_probs[i] = cnn_probs[i]
+            elif cnn_preds[i] == logreg_preds[i]:  # Agreement between CNN and LogReg
+                # Use confidence-weighted average of CNN and LogReg
+                combined_weight = weights[1][i] + weights[2][i]
+                logreg_weight = weights[1][i] / combined_weight
+                cnn_weight = weights[2][i] / combined_weight
+                
+                final_probs[i] = (
+                    cnn_weight * cnn_probs[i] +
+                    logreg_weight * logreg_probs[i]
                 )
-                final_preds[i] = np.argmax(weighted_prob)
-                final_probs[i] = weighted_prob
-
+                final_preds[i] = np.argmax(final_probs[i])
+            else:  # No agreement, use dynamically weighted ensemble
+                final_probs[i] = (
+                    weights[0][i] * mlp_probs[i] +
+                    weights[1][i] * logreg_probs[i] +
+                    weights[2][i] * cnn_probs[i]
+                )
+                final_preds[i] = np.argmax(final_probs[i])
+        
         return final_preds, final_probs
-
-    def predict_all(self, images, clip_features):
-        results = {}
-        # Get individual model predictions
-        results['mlp'] = self.predict_mlp(clip_features)
-        results['logreg'] = self.predict_logreg(clip_features)
-        results['cnn'] = self.predict_cnn(images)
-        
-        # Get ensemble predictions using both methods
-        results['weighted_voting'] = self.predict_weighted_voting(images, clip_features)
-        results['hierarchical'] = self.predict_hierarchical(images, clip_features)
-        
-        return results
-    
 
 @st.cache_resource
 def load_models():
