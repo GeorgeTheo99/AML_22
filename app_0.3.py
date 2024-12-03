@@ -214,37 +214,37 @@ class EnhancedEnsembleModel:
 
     def predict_hierarchical(self, images, clip_features):
         """
-        Hierarchical ensemble prediction that first checks CNN confidence,
-        then checks if MLP and LogReg agree, falling back to weighted voting if needed
+        Hierarchical ensemble prediction that first checks MLP confidence,
+        then checks if CNN and LogReg agree, falling back to weighted voting if needed
         """
         # Get predictions from all models
         mlp_preds, mlp_probs = self.predict_mlp(clip_features)
         logreg_preds, logreg_probs = self.predict_logreg(clip_features)
         cnn_preds, cnn_probs = self.predict_cnn(images)
-        
+
         # Calculate confidence scores and weights for potential weighted voting
         confidences = [np.max(probs, axis=1) for probs in [mlp_probs, logreg_probs, cnn_probs]]
         base_weights = np.array([self.model_weights[m] for m in ['mlp', 'logreg', 'cnn']])
         weights = np.array([w * conf for w, conf in zip(base_weights, confidences)])
         weights = weights / weights.sum(axis=0, keepdims=True)
-        
+
         n_samples = len(images)
         final_preds = np.zeros(n_samples, dtype=int)
         final_probs = np.zeros((n_samples, len(EMOTION_LABELS)))
-        
+
         # Hierarchical decision making
         for i in range(n_samples):
-            if confidences[2][i] > 0.8:  # High confidence CNN prediction
-                final_preds[i] = cnn_preds[i]
-                final_probs[i] = cnn_probs[i]
-            elif mlp_preds[i] == logreg_preds[i]:  # MLP and LogReg agree
-                # Weight between MLP and LogReg based on their confidences
-                combined_weight = weights[0][i] + weights[1][i]
-                mlp_weight = weights[0][i] / combined_weight
+            if confidences[0][i] > 0.8:  # High confidence MLP prediction
+                final_preds[i] = mlp_preds[i]
+                final_probs[i] = mlp_probs[i]
+            elif cnn_preds[i] == logreg_preds[i]:  # CNN and LogReg agree
+                # Weight between CNN and LogReg based on their confidences
+                combined_weight = weights[2][i] + weights[1][i]
+                cnn_weight = weights[2][i] / combined_weight
                 logreg_weight = weights[1][i] / combined_weight
-                
+
                 final_probs[i] = (
-                    mlp_weight * mlp_probs[i] +
+                    cnn_weight * cnn_probs[i] +
                     logreg_weight * logreg_probs[i]
                 )
                 final_preds[i] = np.argmax(final_probs[i])
@@ -255,7 +255,7 @@ class EnhancedEnsembleModel:
                     weights[2][i] * cnn_probs[i]
                 )
                 final_preds[i] = np.argmax(final_probs[i])
-        
+
         return final_preds, final_probs
     
     def predict_all(self, images, clip_features):
