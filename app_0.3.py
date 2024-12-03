@@ -263,7 +263,11 @@ def load_models():
     
     return clip_model, preprocess, ensemble_model
 
-def process_image(image, clip_model, preprocess, ensemble_model):
+@st.cache_data
+def process_image(image_bytes, clip_model, preprocess, ensemble_model):
+    # Convert bytes to image
+    image = Image.open(io.BytesIO(image_bytes))
+    
     # Convert to grayscale and resize to 48x48
     img_gray = image.convert('L').resize((48, 48))
     img_array = np.array(img_gray)
@@ -302,14 +306,18 @@ def main():
     with st.spinner("Loading models..."):
         clip_model, preprocess, ensemble_model = load_models()
 
-    # File uploader
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+    # File uploader with clear_on_submit=True
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], 
+                                   on_change=lambda: st.cache_data.clear())
 
     if uploaded_file is not None:
+        # Read file bytes once
+        file_bytes = uploaded_file.getvalue()
+        
         # Display images
         col1, col2 = st.columns(2)
         
-        image = Image.open(uploaded_file)
+        image = Image.open(io.BytesIO(file_bytes))
         with col1:
             st.subheader("Original Image")
             st.image(image, use_container_width=True)
@@ -319,9 +327,9 @@ def main():
             img_gray = image.convert('L').resize((48, 48))
             st.image(img_gray, use_container_width=True)
 
-        # Process image and get predictions
+        # Process image and get predictions using cached function with file bytes
         with st.spinner("Analyzing image..."):
-            results = process_image(image, clip_model, preprocess, ensemble_model)
+            results = process_image(file_bytes, clip_model, preprocess, ensemble_model)
 
         # Create tabs for different models
         tabs = st.tabs(["Ensemble Methods", "Individual Models", "Confidence Analysis"])
