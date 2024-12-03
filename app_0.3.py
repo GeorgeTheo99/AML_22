@@ -263,8 +263,9 @@ def load_models():
     
     return clip_model, preprocess, ensemble_model
 
+# Modified to ignore unhashable model parameters in cache
 @st.cache_data
-def process_image(image_bytes, clip_model, preprocess, ensemble_model):
+def process_image(image_bytes, _clip_model, _preprocess, _ensemble_model):
     # Convert bytes to image
     image = Image.open(io.BytesIO(image_bytes))
     
@@ -276,16 +277,16 @@ def process_image(image_bytes, clip_model, preprocess, ensemble_model):
     # Prepare image for CLIP
     img_rgb = Image.new('RGB', image.size, (0, 0, 0))
     img_rgb.paste(img_gray)
-    img_clip = preprocess(img_rgb).unsqueeze(0).to(DEVICE)
+    img_clip = _preprocess(img_rgb).unsqueeze(0).to(DEVICE)
 
     # Extract CLIP features
     with torch.no_grad():
-        features = clip_model.encode_image(img_clip)
+        features = _clip_model.encode_image(img_clip)
         features = features / features.norm(dim=-1, keepdim=True)
         clip_features = features.cpu().numpy()
 
     # Get predictions
-    return ensemble_model.predict_all(img_array_cnn, clip_features)
+    return _ensemble_model.predict_all(img_array_cnn, clip_features)
 
 def main():
     st.set_page_config(
@@ -302,16 +303,28 @@ def main():
     - **Deep CNN** with batch normalization and dropout
     """)
 
+    # Add session state for tracking image changes
+    if 'last_image_id' not in st.session_state:
+        st.session_state['last_image_id'] = None
+
     # Load models
     with st.spinner("Loading models..."):
         clip_model, preprocess, ensemble_model = load_models()
 
-    # File uploader with clear_on_submit=True
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"], 
-                                   on_change=lambda: st.cache_data.clear())
+    # File uploader
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
-        # Read file bytes once
+        # Generate unique ID for this image
+        current_image_id = id(uploaded_file)
+        
+        # Check if this is a new image
+        if current_image_id != st.session_state['last_image_id']:
+            # Clear the cache
+            process_image.clear()
+            st.session_state['last_image_id'] = current_image_id
+
+        # Read file bytes
         file_bytes = uploaded_file.getvalue()
         
         # Display images
@@ -327,7 +340,7 @@ def main():
             img_gray = image.convert('L').resize((48, 48))
             st.image(img_gray, use_container_width=True)
 
-        # Process image and get predictions using cached function with file bytes
+        # Process image and get predictions
         with st.spinner("Analyzing image..."):
             results = process_image(file_bytes, clip_model, preprocess, ensemble_model)
 
